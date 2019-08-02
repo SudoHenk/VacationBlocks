@@ -1,7 +1,7 @@
 pragma solidity ^0.5.10;
 
 
-library DateLibrary {
+library DateTimeLibrary {
     
     uint constant MILLI_SECONDS_IN_DAY = (24 * 60 * 60 * 1000);
     

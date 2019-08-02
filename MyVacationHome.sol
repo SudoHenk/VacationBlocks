@@ -1,15 +1,19 @@
 pragma solidity ^0.5.10;
 
 import "./ReservationAble.sol";
-import "./DateLibrary.sol";
+import "./DateTimeLibrary.sol";
 
 contract MyVacationHome is ReservationAble {
-    using DateLibrary for uint;
+    // using the DateTimeLibrary on epoch timestamps.
+    using DateTimeLibrary for uint;
     
+    // The deployer of this contract.
     address owner;
 
+    // Linkedlist length + salt
     uint public reservationLength = 0;
     
+    // Struct for our linkedlist that stores the reservations.
     struct Reservation {
         bytes32 next;
         uint startDate;
@@ -18,22 +22,67 @@ contract MyVacationHome is ReservationAble {
         uint payed;
     }
     
+    // Head of the linkedlist
     bytes32 public head;
+    // Mapping of the linkedlist
     mapping (bytes32 => Reservation) public reservations;
     
+    // Modifier for privileged contract owner methods.
     modifier onlyOwner {
         require(msg.sender == owner);
         _;
     }
     
+    // constructor of contract
     constructor() public { 
         owner = msg.sender; 
     }
     
+    // ---------------------------------
+    //      EXTERNAL METHODS
+    // ---------------------------------
+    
+    /**
+     * Checks if the given timespan (startDate + duration) can be reserved.
+     */
+    function isReserveable(uint startDate, StayType duration) external view returns (bool) {
+        validateReservationDateRules(startDate, duration);
+        return isReserveableInternal(startDate, duration);
+    }
+    
+    /**
+     * Get the price (in wei) for the period that needs to be paid for an reservation.
+     */
+    function getReservationPrice(uint startDate, StayType duration) external view returns (uint) {
+        return getReservationPriceInternal(startDate, duration);
+    }
+    
+    /**
+     * Make a reservation for the timespan from startDate till startDate + duration.
+     * Note that this method is payable, and needs at least the price given by "getReservationPrice", in wei.
+     */
+    function reserve(uint startDate, StayType duration) external payable returns (bool) {
+        validateReservationDateRules(startDate, duration);
+        require(isReserveableInternal(startDate, duration) == true, "This reservation date is not available.");
+        require(msg.value >= getReservationPriceInternal(startDate, duration), "This transaction does not contain enough ether to reserve this date.");
+        addReservation(startDate, duration, false);
+        return true;
+    }
+    
+    // ---------------------------------
+    //      INTERNAL METHODS
+    // ---------------------------------
+    
+    /**
+     *  Get the enddate (in ms. epoch) of a stay.
+     */
     function calculateEndOfStay(uint startDate, StayType duration) private pure returns (uint) {
         return startDate + mapStayTypeToDays(duration).getEpochTimeMsFromDays();
     }
     
+    /**
+     * Map the enumeration "StayType" to an uint days.
+     */
     function mapStayTypeToDays(StayType duration) private pure returns (uint) {
         if(duration == StayType.WEEK) {
             return 7;
@@ -54,11 +103,11 @@ contract MyVacationHome is ReservationAble {
         }
     }
     
-    function isReserveable(uint startDate, StayType duration) external view returns (bool) {
-        validateReservationDateRules(startDate, duration);
-        return isReserveableInternal(startDate, duration);
-    }
-    
+    /**
+     * Method that validates if the given startDate and duration can be reserved:
+     * - Does not conflict with existing reservations
+     * - Does not conflict with blocked dates
+     */
     function isReserveableInternal(uint startDate, StayType duration) private view returns (bool) {
         bytes32 iter = head;
         bool available = true;
@@ -75,6 +124,9 @@ contract MyVacationHome is ReservationAble {
         return available;
     }
     
+    /**
+     * Store a reservation in our internal contract.
+     */
     function addReservation(uint startDate, StayType duration, bool isManual) private {
         Reservation memory reservation;
         if(isManual) {
@@ -88,12 +140,26 @@ contract MyVacationHome is ReservationAble {
         reservationLength = reservationLength+1;
     }
     
-    function reserve(uint startDate, StayType duration) external payable returns (bool) {
-        validateReservationDateRules(startDate, duration);
-        require(isReserveableInternal(startDate, duration) == true, "This reservation date is not available.");
-        require(msg.value >= getReservationPriceInternal(startDate, duration), "This transaction does not contain enough ether to reserve this date.");
-        addReservation(startDate, duration, false);
-        return true;
+    /**
+     * Remove a reservation from our internal contract.
+     */
+    function removeReservation(uint startDate, StayType duration, address sender) private {
+        bytes32 iter = head;
+        Reservation prevReservation = null;
+        while(iter != 0) {
+            if(reservations[iter].startDate == startDate && reservations[iter].duration == duration && reservations[iter].sender == sender) {
+                if(prevReservation == null) {
+                    head = reservations[iter].next;
+                } else {
+                    prevReservation.next = reservations[iter].next;
+                }
+                delete reservations[iter];
+                reservationLength = reservationLength - 1;
+                break;
+            }
+            prevReservation = reservations[iter];
+            iter = reservations[iter].next;
+        }
     }
     
     /**
@@ -115,22 +181,49 @@ contract MyVacationHome is ReservationAble {
         }
     }
     
-    function blockDate(uint startDate, StayType duration) external onlyOwner returns (bool) {
-        validateReservationDateRules(startDate, duration);
-        require(isReserveableInternal(startDate, duration) == true, "This reservation date already blocked.");
-        addReservation(startDate, duration, true);
-        return true;
-    }
-    
-    
-    function getReservationPrice(uint startDate, StayType duration) external view returns (uint) {
-        return getReservationPriceInternal(startDate, duration);
-    }
-    
+    /**
+     * Determine the price for the given startDate and duration.
+     * in wei.
+     */
     function getReservationPriceInternal(uint startDate, StayType duration) private view returns (uint) {
         return 50;
     }
     
+    // ---------------------------------
+    //       OWNER CONTRACT METHODS
+    // ---------------------------------
+    
+    /**
+     * Make sure a certain timespan cannot be reserved by storing this "blocked date".
+     */
+    function blockDate(uint startDate, StayType duration) external onlyOwner {
+        validateReservationDateRules(startDate, duration);
+        require(isReserveableInternal(startDate, duration) == true, "This reservation is date already blocked.");
+        addReservation(startDate, duration, true);
+    }
+    
+    /**
+     * Remove a blocked timespan.
+     * Note that this only removes "blocked dates" or reservations made by the contract owner, not any arbitrary reservation.
+     */
+    function unblockDate(uint startDate, StayType duration) external onlyOwner {
+        removeReservation(startDate, duration, self.sender);
+    }
+    
+    /**
+     * Withdraw earnings from the contract.
+     */
+    function withdraw(uint amount) external onlyOwner {
+        msg.sender.transfer(amount);
+    }
+    
+    // ---------------------------------
+    //       METADATA CONTRACT METHODS
+    // ---------------------------------
+    
+    /**
+     * Get the SME Base Url, from where rich media will be retrieved.
+     */
     function getSMEBaseUrl() external view returns (string memory) {
         return "https://somemediadomain.com/solApi/v1/";
     }
